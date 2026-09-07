@@ -1,4 +1,15 @@
 import re
+import logging
+
+logger = logging.getLogger(__name__)
+
+def escape_md(text: str) -> str:
+    """Экранирование спецсимволов Telegram Markdown v1."""
+    if not text:
+        return text
+    for ch in ('_', '*', '`', '['):
+        text = text.replace(ch, '\\' + ch)
+    return text
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart
@@ -403,41 +414,62 @@ async def submit_application(message: Message, state: FSMContext, bot: Bot):
     )
     
     # 3. Карточка студента в спец-группу HR/Руководителям
+    logger.info(f"Отправка заявки #{app_id} в группу TARGET_GROUP_ID={TARGET_GROUP_ID}")
     if TARGET_GROUP_ID and TARGET_GROUP_ID != 0:
         username_str = f"@{user.username}" if user.username else "Отсутствует"
+        
+        # Экранируем пользовательские данные, чтобы спецсимволы не ломали Markdown
+        safe_name = escape_md(data['full_name'])
+        safe_course = escape_md(data['course'])
+        safe_cv = escape_md(data['cv_portfolio'])
+        safe_motivation = escape_md(data['motivation'])
+        safe_title = escape_md(data['vacancy_title'])
+        safe_contact = escape_md(data['contact_info'])
+        
         group_card_text = (
-            f"🎯 **НА КАКУЮ РОЛЬ ПОДАЕТСЯ КАНДИДАТ:**\n"
+            f"🎯 *НА КАКУЮ РОЛЬ ПОДАЕТСЯ КАНДИДАТ:*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔥 **{data['vacancy_title']}**\n"
+            f"🔥 *{safe_title}*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📋 **ДАННЫЕ КАНДИДАТА:**\n"
-            f"👤 **ФИО:** {data['full_name']}\n"
-            f"🎓 **Курс:** {data['course']}\n"
-            f"🪪 **Student ID:** `{data['student_id']}`\n"
-            f"✈️ **Telegram:** {username_str} (ID: `{user.id}`)\n"
-            f"📞 **Контакты:** {data['contact_info']}\n"
-            f"📄 **CV / Портфолио:** {data['cv_portfolio']}\n"
-            f"🌐 **Язык анкеты:** {user_lang.upper()}\n\n"
-            f"🧠 **Мотивация / Почему хочет в команду:**\n{data['motivation']}\n\n"
-            f"🔖 *Анкета №{app_id}*"
+            f"📋 *ДАННЫЕ КАНДИДАТА:*\n"
+            f"👤 *ФИО:* {safe_name}\n"
+            f"🎓 *Курс:* {safe_course}\n"
+            f"🪪 *Student ID:* `{data['student_id']}`\n"
+            f"✈️ *Telegram:* {username_str} (ID: `{user.id}`)\n"
+            f"📞 *Контакты:* {safe_contact}\n"
+            f"📄 *CV / Портфолио:* {safe_cv}\n"
+            f"🌐 *Язык анкеты:* {user_lang.upper()}\n\n"
+            f"🧠 *Мотивация / Почему хочет в команду:*\n{safe_motivation}\n\n"
+            f"🔖 _Анкета №{app_id}_"
         )
+        
+        sent = False
+        target_id = TARGET_GROUP_ID
+        
+        # Попытка 1: отправка с Markdown
         try:
             await bot.send_message(
-                chat_id=TARGET_GROUP_ID,
+                chat_id=target_id,
                 text=group_card_text,
                 reply_markup=get_group_application_keyboard(app_id, user.id, user.username),
                 parse_mode="Markdown"
             )
+            sent = True
+            logger.info(f"Заявка #{app_id} успешно отправлена в группу {target_id}")
         except Exception as e:
+            logger.error(f"Ошибка отправки заявки #{app_id} в группу ({target_id}): {e}", exc_info=True)
+            
             # Проверка миграции чата
             new_chat_id = getattr(e, "migrate_to_chat_id", None)
-            if not new_chat_id and "migrated to a supergroup with id " in str(e):
+            if not new_chat_id and "migrated to a supergroup with id" in str(e).lower():
                 try:
                     new_chat_id = int(str(e).split("migrated to a supergroup with id ")[1].split()[0])
                 except Exception:
                     pass
             
             if new_chat_id:
+                target_id = new_chat_id
+                logger.info(f"Группа мигрировала, новый ID: {new_chat_id}")
                 try:
                     await bot.send_message(
                         chat_id=new_chat_id,
@@ -445,10 +477,40 @@ async def submit_application(message: Message, state: FSMContext, bot: Bot):
                         reply_markup=get_group_application_keyboard(app_id, user.id, user.username),
                         parse_mode="Markdown"
                     )
-                    print(f"[INFO] Сообщение отправлено в мигрированную супергруппу {new_chat_id}")
+                    sent = True
+                    logger.info(f"Сообщение отправлено в мигрированную супергруппу {new_chat_id}")
                 except Exception as e2:
-                    print(f"[ERROR] Ошибка отправки в мигрированную супергруппу ({new_chat_id}): {e2}")
-            else:
-                print(f"[ERROR] Ошибка отправки карточки студента в группу ({TARGET_GROUP_ID}): {e}")
+                    logger.error(f"Ошибка отправки в мигрированную супергруппу ({new_chat_id}): {e2}", exc_info=True)
+        
+        # Попытка 2 (fallback): если Markdown не сработал, отправляем без форматирования
+        if not sent:
+            logger.warning(f"Fallback: отправка заявки #{app_id} без parse_mode в {target_id}")
+            plain_text = (
+                f"🎯 НА КАКУЮ РОЛЬ ПОДАЕТСЯ КАНДИДАТ:\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔥 {data['vacancy_title']}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"📋 ДАННЫЕ КАНДИДАТА:\n"
+                f"👤 ФИО: {data['full_name']}\n"
+                f"🎓 Курс: {data['course']}\n"
+                f"🪪 Student ID: {data['student_id']}\n"
+                f"✈️ Telegram: {username_str} (ID: {user.id})\n"
+                f"📞 Контакты: {data['contact_info']}\n"
+                f"📄 CV / Портфолио: {data['cv_portfolio']}\n"
+                f"🌐 Язык анкеты: {user_lang.upper()}\n\n"
+                f"🧠 Мотивация / Почему хочет в команду:\n{data['motivation']}\n\n"
+                f"🔖 Анкета №{app_id}"
+            )
+            try:
+                await bot.send_message(
+                    chat_id=target_id,
+                    text=plain_text,
+                    reply_markup=get_group_application_keyboard(app_id, user.id, user.username)
+                )
+                logger.info(f"Заявка #{app_id} отправлена в группу {target_id} (без Markdown)")
+            except Exception as e3:
+                logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: не удалось отправить заявку #{app_id} в группу ({target_id}) даже без Markdown: {e3}", exc_info=True)
+    else:
+        logger.warning(f"TARGET_GROUP_ID не задан или равен 0! Заявка #{app_id} НЕ отправлена в группу.")
 
 

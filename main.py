@@ -5,7 +5,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, TARGET_GROUP_ID
 from database.db import init_db
 from handlers import admin, user, group
 
@@ -27,6 +27,9 @@ async def main():
     # Инициализация базы данных
     await init_db()
     logging.info("База данных инициализирована.")
+    logging.info(f"TARGET_GROUP_ID = {TARGET_GROUP_ID} (type: {type(TARGET_GROUP_ID).__name__})")
+    if not TARGET_GROUP_ID or TARGET_GROUP_ID == 0:
+        logging.warning("⚠️ TARGET_GROUP_ID не задан! Заявки НЕ будут отправляться в группу.")
 
     # Инициализация бота и диспетчера
     bot = Bot(token=BOT_TOKEN)

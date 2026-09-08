@@ -324,23 +324,16 @@ async def process_app_cv(message: Message, state: FSMContext):
 
     user_lang = await get_user_lang(message.from_user.id)
 
-    # --- Принимаем файл (PDF, Word, TXT, фото) ---
+    # --- Принимаем ЛЮБОЙ файл-документ (PDF, Word, TXT и т.д.) ---
     if message.document:
         doc = message.document
-        mime = (doc.mime_type or "").lower()
-        allowed_mimes = (
-            "application/pdf",
-            "application/msword",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "text/plain",
+        # Берём имя файла для отображения, если есть
+        file_label = doc.file_name or "📎 Файл"
+        await state.update_data(
+            cv_portfolio=f"📎 {file_label}",
+            cv_file_id=doc.file_id,
+            cv_file_type="document"
         )
-        if mime not in allowed_mimes:
-            await message.answer(
-                "⚠️ Поддерживаются только файлы PDF, Word или TXT. "
-                "Пожалуйста, отправьте подходящий файл или ссылку."
-            )
-            return
-        await state.update_data(cv_portfolio="📎 Файл", cv_file_id=doc.file_id, cv_file_type="document")
 
     elif message.photo:
         photo = message.photo[-1]  # лучшее качество
@@ -353,9 +346,9 @@ async def process_app_cv(message: Message, state: FSMContext):
         await state.update_data(cv_portfolio=cv_text, cv_file_id=None, cv_file_type=None)
 
     else:
-        # Непонятный тип сообщения
+        # Голосовое, стикер и т.д. — просим отправить нормально
         await message.answer(
-            "⚠️ Пожалуйста, отправьте файл, ссылку или нажмите «Пропустить»."
+            "⚠️ Пожалуйста, отправьте файл (PDF/Word), ссылку или нажмите «Пропустить»."
         )
         return
 

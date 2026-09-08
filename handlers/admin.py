@@ -1,16 +1,22 @@
-from aiogram import Router, F
+import logging
+from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
-from config import is_admin
+logger = logging.getLogger(__name__)
+
+from config import is_admin, TARGET_GROUP_ID
 from database.db import (
     create_vacancy,
     get_all_vacancies,
     get_vacancy_by_id,
     toggle_vacancy_active,
     delete_vacancy,
-    get_user_lang
+    get_user_lang,
+    get_stats,
+    get_unsent_applications,
+    mark_application_sent
 )
 from states.vacancy import VacancyForm
 from keyboards.reply import get_main_keyboard, get_cancel_keyboard
@@ -251,3 +257,135 @@ async def delete_vacancy_admin(callback: CallbackQuery):
             reply_markup=get_admin_vacancies_keyboard(vacancies),
             parse_mode="Markdown"
         )
+
+
+# --- СТАТИСТИКА ---
+
+@router.callback_query(F.data == "admin_stats")
+async def cb_admin_stats(callback: CallbackQuery):
+    if not check_admin_permission(callback.from_user.id):
+        await callback.answer("У вас нет прав.", show_alert=True)
+        return
+
+    stats = await get_stats()
+
+    text = (
+        "📊 **Статистика бота**\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "👥 **Посещения (/start):**\n"
+        f"  • Сегодня: **{stats['visits_today']}**\n"
+        f"  • Вчера: **{stats['visits_yesterday']}**\n"
+        f"  • За неделю: **{stats['visits_week']}** "
+        f"(уникальных: {stats['unique_users_week']})\n\n"
+        "📝 **Отправленные заявки:**\n"
+        f"  • Сегодня: **{stats['apps_today']}**\n"
+        f"  • Вчера: **{stats['apps_yesterday']}**\n"
+        f"  • За неделю: **{stats['apps_week']}**\n"
+        f"  • Всего: **{stats['apps_total']}**\n\n"
+    )
+
+    if stats['unsent_count'] > 0:
+        text += (
+            f"⚠️ **Не дошло до группы: {stats['unsent_count']} шт.**\n"
+            "Нажмите «🔄 Переслать незашедшие заявки» чтобы отправить их."
+        )
+    else:
+        text += "✅ Все заявки дошли до группы."
+
+    from keyboards.inline import get_admin_main_keyboard
+    try:
+        await callback.message.edit_text(text, reply_markup=get_admin_main_keyboard(), parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=get_admin_main_keyboard(), parse_mode="Markdown")
+    await callback.answer()
+
+
+# --- ПЕРЕСЛАТЬ НЕОТПРАВЛЕННЫЕ ЗАЯВКИ ---
+
+@router.callback_query(F.data == "admin_resend_unsent")
+async def cb_admin_resend_unsent(callback: CallbackQuery, bot: Bot):
+    if not check_admin_permission(callback.from_user.id):
+        await callback.answer("У вас нет прав.", show_alert=True)
+        return
+
+    await callback.answer()
+
+    if not TARGET_GROUP_ID or TARGET_GROUP_ID == 0:
+        await callback.message.answer("❌ TARGET\_GROUP\_ID не задан. Невозможно отправить.")
+        return
+
+    unsent = await get_unsent_applications()
+    if not unsent:
+        await callback.message.answer("✅ Все заявки уже были отправлены в группу!")
+        return
+
+    await callback.message.answer(
+        f"🔄 Найдено **{len(unsent)}** недошедших заявок. Начинаю отправку...",
+        parse_mode="Markdown"
+    )
+
+    from keyboards.inline import get_group_application_keyboard
+
+    sent_ok = 0
+    sent_fail = 0
+
+    for app in unsent:
+        app_id  = app["id"]
+        user_id = app["user_id"]
+        username_str = f"@{app['username']}" if app.get("username") else "Отсутствует"
+
+        card_text = (
+            f"🎯 *НА КАКУЮ РОЛЬ:*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔥 *{app['vacancy_title']}*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📋 *ДАННЫЕ КАНДИДАТА:*\n"
+            f"👤 *ФИО:* {app['full_name']}\n"
+            f"🎓 *Курс:* {app['course']}\n"
+            f"🪦 *Student ID:* `{app['student_id']}`\n"
+            f"✈️ *Telegram:* {username_str} (ID: `{user_id}`)\n"
+            f"📞 *Контакты:* {app['contact_info']}\n"
+            f"📄 *CV:* {app['cv_portfolio']}\n"
+            f"🌐 *Язык:* {app.get('lang', 'ru').upper()}\n\n"
+            f"🧠 *Мотивация:*\n{app['motivation']}\n\n"
+            f"🔖 _Анкета \u2116{app_id} (✅ переотправка)_"
+        )
+
+        try:
+            await bot.send_message(
+                chat_id=TARGET_GROUP_ID,
+                text=card_text,
+                reply_markup=get_group_application_keyboard(app_id, user_id, app.get("username")),
+                parse_mode="Markdown"
+            )
+            await mark_application_sent(app_id)
+            sent_ok += 1
+            logger.info(f"[Переотправка] Заявка #{app_id} успешно отправлена.")
+        except Exception as e:
+            # Fallback: без Markdown
+            try:
+                plain = (
+                    f"🎯 {app['vacancy_title']}\n"
+                    f"👤 {app['full_name']} | 🎓 {app['course']} | 🪦 {app['student_id']}\n"
+                    f"✈️ {username_str} (ID: {user_id})\n"
+                    f"📞 {app['contact_info']}\n"
+                    f"📄 {app['cv_portfolio']}\n"
+                    f"🧠 {app['motivation']}\n"
+                    f"🔖 Анкета \u2116{app_id} (переотправка)"
+                )
+                await bot.send_message(
+                    chat_id=TARGET_GROUP_ID,
+                    text=plain,
+                    reply_markup=get_group_application_keyboard(app_id, user_id, app.get("username"))
+                )
+                await mark_application_sent(app_id)
+                sent_ok += 1
+                logger.info(f"[Переотправка] Заявка #{app_id} отправлена (plain text).")
+            except Exception as e2:
+                sent_fail += 1
+                logger.error(f"[Переотправка] Ошибка заявки #{app_id}: {e2}")
+
+    result = f"✅ Отправлено: **{sent_ok}**\n"
+    if sent_fail > 0:
+        result += f"❌ Не удалось: **{sent_fail}** (см. логи)"
+    await callback.message.answer(result, parse_mode="Markdown")

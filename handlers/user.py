@@ -20,9 +20,10 @@ from database.db import (
     get_active_vacancies,
     get_vacancy_by_id,
     create_application,
-    has_recent_application,
+    mark_application_sent,
     get_user_lang,
-    set_user_lang
+    set_user_lang,
+    log_visit
 )
 from locales.texts import get_text
 from states.application import ApplicationForm
@@ -60,8 +61,13 @@ async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
     user_lang = await get_user_lang(user_id)
     user_is_admin = is_admin(user_id)
-    
-    # Приветствие
+
+    # Логируем посещение для статистики
+    try:
+        await log_visit(user_id)
+    except Exception:
+        pass
+
     welcome_text = get_text(user_lang, "welcome", name=message.from_user.full_name)
     await message.answer(
         welcome_text,
@@ -220,27 +226,6 @@ async def start_application(callback: CallbackQuery, state: FSMContext):
         await callback.answer(get_text(user_lang, "direction_unavailable"), show_alert=True)
         return
 
-    # Проверка лимита 24 часов на повторную подачу заявки
-    has_recent, remaining_seconds = await has_recent_application(user_id, vac_id, hours=24)
-    if has_recent and not user_is_admin:
-        hours = remaining_seconds // 3600
-        minutes = (remaining_seconds % 3600) // 60
-        
-        cooldown_text = get_text(
-            user_lang, "cooldown_msg",
-            title=vac["title"],
-            hours=hours,
-            minutes=minutes
-        )
-        
-        await callback.message.answer(
-            cooldown_text,
-            reply_markup=get_main_keyboard(user_lang, is_admin=user_is_admin),
-            parse_mode="Markdown"
-        )
-        await callback.answer()
-        return
-
     await state.set_state(ApplicationForm.full_name)
     await state.update_data(vacancy_id=vac_id, vacancy_title=vac["title"], lang=user_lang)
 
@@ -331,30 +316,69 @@ async def process_app_contact(message: Message, state: FSMContext):
         parse_mode="Markdown"
     )
 
-@router.message(ApplicationForm.cv_portfolio, ~F.text.startswith("❌"))
+@router.message(ApplicationForm.cv_portfolio)
 async def process_app_cv(message: Message, state: FSMContext):
+    # Обрабатываем отмену через текст
+    if message.text and message.text.startswith("❌"):
+        return await cancel_handler(message, state)
+
     user_lang = await get_user_lang(message.from_user.id)
-    text = message.text.strip()
-    
-    if text in ["⏩ Пропустить", "⏩ Skip", "⏩ O'tkazib yuborish"]:
-        cv_text = "—"
+
+    # --- Принимаем файл (PDF, Word, TXT, фото) ---
+    if message.document:
+        doc = message.document
+        mime = (doc.mime_type or "").lower()
+        allowed_mimes = (
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "text/plain",
+        )
+        if mime not in allowed_mimes:
+            await message.answer(
+                "⚠️ Поддерживаются только файлы PDF, Word или TXT. "
+                "Пожалуйста, отправьте подходящий файл или ссылку."
+            )
+            return
+        await state.update_data(cv_portfolio="📎 Файл", cv_file_id=doc.file_id, cv_file_type="document")
+
+    elif message.photo:
+        photo = message.photo[-1]  # лучшее качество
+        await state.update_data(cv_portfolio="🖼️ Фото", cv_file_id=photo.file_id, cv_file_type="photo")
+
+    elif message.text:
+        text = message.text.strip()
+        skip_words = ["⏩ Пропустить", "⏩ Skip", "⏩ O'tkazib yuborish"]
+        cv_text = "—" if text in skip_words else text
+        await state.update_data(cv_portfolio=cv_text, cv_file_id=None, cv_file_type=None)
+
     else:
-        cv_text = text
-        
-    await state.update_data(cv_portfolio=cv_text)
+        # Непонятный тип сообщения
+        await message.answer(
+            "⚠️ Пожалуйста, отправьте файл, ссылку или нажмите «Пропустить»."
+        )
+        return
+
     await state.set_state(ApplicationForm.motivation)
-    
     await message.answer(
         get_text(user_lang, "step_motivation"),
         reply_markup=get_cancel_keyboard(user_lang),
         parse_mode="Markdown"
     )
 
-@router.message(ApplicationForm.motivation, ~F.text.startswith("❌"))
+@router.message(ApplicationForm.motivation)
 async def process_app_motivation(message: Message, state: FSMContext):
+    if message.text and message.text.startswith("❌"):
+        return await cancel_handler(message, state)
+
     user_lang = await get_user_lang(message.from_user.id)
+
+    if not message.text:
+        await message.answer("⚠️ Пожалуйста, напишите текст с вашей мотивацией.")
+        return
+
     text = message.text.strip()
-    
+
     if len(text) < 15:
         await message.answer(get_text(user_lang, "err_motivation"))
         return
@@ -363,7 +387,15 @@ async def process_app_motivation(message: Message, state: FSMContext):
     await state.set_state(ApplicationForm.confirm)
     
     data = await state.get_data()
-    
+
+    # Если пользователь прикрепил файл, показываем другой ключ локализации
+    has_cv_file = bool(data.get("cv_file_id"))
+    cv_preview_line = (
+        get_text(user_lang, "preview_cv_file")
+        if has_cv_file
+        else get_text(user_lang, "preview_cv", cv=data["cv_portfolio"])
+    )
+
     preview_text = (
         get_text(user_lang, "preview_title") +
         get_text(user_lang, "preview_direction", title=data["vacancy_title"]) +
@@ -371,7 +403,7 @@ async def process_app_motivation(message: Message, state: FSMContext):
         get_text(user_lang, "preview_course", course=data["course"]) +
         get_text(user_lang, "preview_student_id", student_id=data["student_id"]) +
         get_text(user_lang, "preview_phone", phone=data["contact_info"]) +
-        get_text(user_lang, "preview_cv", cv=data["cv_portfolio"]) +
+        cv_preview_line +
         get_text(user_lang, "preview_motivation", motivation=data["motivation"]) +
         get_text(user_lang, "preview_confirm")
     )
@@ -415,102 +447,144 @@ async def submit_application(message: Message, state: FSMContext, bot: Bot):
     
     # 3. Карточка студента в спец-группу HR/Руководителям
     logger.info(f"Отправка заявки #{app_id} в группу TARGET_GROUP_ID={TARGET_GROUP_ID}")
-    if TARGET_GROUP_ID and TARGET_GROUP_ID != 0:
-        username_str = f"@{user.username}" if user.username else "Отсутствует"
-        
-        # Экранируем пользовательские данные, чтобы спецсимволы не ломали Markdown
-        safe_name = escape_md(data['full_name'])
-        safe_course = escape_md(data['course'])
-        safe_cv = escape_md(data['cv_portfolio'])
-        safe_motivation = escape_md(data['motivation'])
-        safe_title = escape_md(data['vacancy_title'])
-        safe_contact = escape_md(data['contact_info'])
-        
-        group_card_text = (
-            f"🎯 *НА КАКУЮ РОЛЬ ПОДАЕТСЯ КАНДИДАТ:*\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔥 *{safe_title}*\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📋 *ДАННЫЕ КАНДИДАТА:*\n"
-            f"👤 *ФИО:* {safe_name}\n"
-            f"🎓 *Курс:* {safe_course}\n"
-            f"🪪 *Student ID:* `{data['student_id']}`\n"
-            f"✈️ *Telegram:* {username_str} (ID: `{user.id}`)\n"
-            f"📞 *Контакты:* {safe_contact}\n"
-            f"📄 *CV / Портфолио:* {safe_cv}\n"
-            f"🌐 *Язык анкеты:* {user_lang.upper()}\n\n"
-            f"🧠 *Мотивация / Почему хочет в команду:*\n{safe_motivation}\n\n"
-            f"🔖 _Анкета №{app_id}_"
-        )
-        
-        sent = False
-        target_id = TARGET_GROUP_ID
-        
-        # Попытка 1: отправка с Markdown
+    if not TARGET_GROUP_ID or TARGET_GROUP_ID == 0:
+        logger.warning(f"TARGET_GROUP_ID не задан или равен 0! Заявка #{app_id} НЕ отправлена в группу.")
+        return
+
+    username_str = f"@{user.username}" if user.username else "Отсутствует"
+    cv_file_id   = data.get("cv_file_id")
+    cv_file_type = data.get("cv_file_type")  # "document" | "photo" | None
+    has_cv_file  = bool(cv_file_id)
+
+    # Строка CV для карточки
+    if has_cv_file:
+        cv_display = "📎 Файл прикреплён отдельным сообщением↓"
+    else:
+        cv_display = escape_md(data['cv_portfolio'])
+
+    # Экранируем пользовательские данные
+    safe_name       = escape_md(data['full_name'])
+    safe_course     = escape_md(data['course'])
+    safe_motivation = escape_md(data['motivation'])
+    safe_title      = escape_md(data['vacancy_title'])
+    safe_contact    = escape_md(data['contact_info'])
+
+    group_card_text = (
+        f"🎯 *НА КАКУЮ РОЛЬ ПОДАЕТСЯ КАНДИДАТ:*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔥 *{safe_title}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📋 *ДАННЫЕ КАНДИДАТА:*\n"
+        f"👤 *ФИО:* {safe_name}\n"
+        f"🎓 *Курс:* {safe_course}\n"
+        f"🪦 *Student ID:* `{data['student_id']}`\n"
+        f"✈️ *Telegram:* {username_str} (ID: `{user.id}`)\n"
+        f"📞 *Контакты:* {safe_contact}\n"
+        f"📄 *CV / Портфолио:* {cv_display}\n"
+        f"🌐 *Язык анкеты:* {user_lang.upper()}\n\n"
+        f"🧠 *Мотивация / Почему хочет в команду:*\n{safe_motivation}\n\n"
+        f"🔖 _Анкета №{app_id}_"
+    )
+
+    # Помощник: ищем правильный chat_id (с учётом миграции группы)
+    async def resolve_chat_id(exc: Exception) -> int | None:
+        new_id = getattr(exc, "migrate_to_chat_id", None)
+        if not new_id and "migrated to a supergroup with id" in str(exc).lower():
+            try:
+                new_id = int(str(exc).split("migrated to a supergroup with id ")[1].split()[0])
+            except Exception:
+                pass
+        return new_id
+
+    async def send_card(chat_id: int) -> bool:
+        """Send the text card to the group. Returns True on success."""
+        # Попытка 1: с Markdown
         try:
             await bot.send_message(
-                chat_id=target_id,
+                chat_id=chat_id,
                 text=group_card_text,
                 reply_markup=get_group_application_keyboard(app_id, user.id, user.username),
-                parse_mode="Markdown"
+                parse_mode="Markdown",
             )
-            sent = True
-            logger.info(f"Заявка #{app_id} успешно отправлена в группу {target_id}")
+            logger.info(f"Заявка #{app_id} успешно отправлена в группу {chat_id}")
+            return True
         except Exception as e:
-            logger.error(f"Ошибка отправки заявки #{app_id} в группу ({target_id}): {e}", exc_info=True)
-            
-            # Проверка миграции чата
-            new_chat_id = getattr(e, "migrate_to_chat_id", None)
-            if not new_chat_id and "migrated to a supergroup with id" in str(e).lower():
-                try:
-                    new_chat_id = int(str(e).split("migrated to a supergroup with id ")[1].split()[0])
-                except Exception:
-                    pass
-            
-            if new_chat_id:
-                target_id = new_chat_id
-                logger.info(f"Группа мигрировала, новый ID: {new_chat_id}")
-                try:
-                    await bot.send_message(
-                        chat_id=new_chat_id,
-                        text=group_card_text,
-                        reply_markup=get_group_application_keyboard(app_id, user.id, user.username),
-                        parse_mode="Markdown"
-                    )
-                    sent = True
-                    logger.info(f"Сообщение отправлено в мигрированную супергруппу {new_chat_id}")
-                except Exception as e2:
-                    logger.error(f"Ошибка отправки в мигрированную супергруппу ({new_chat_id}): {e2}", exc_info=True)
-        
-        # Попытка 2 (fallback): если Markdown не сработал, отправляем без форматирования
-        if not sent:
-            logger.warning(f"Fallback: отправка заявки #{app_id} без parse_mode в {target_id}")
-            plain_text = (
-                f"🎯 НА КАКУЮ РОЛЬ ПОДАЕТСЯ КАНДИДАТ:\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🔥 {data['vacancy_title']}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"📋 ДАННЫЕ КАНДИДАТА:\n"
-                f"👤 ФИО: {data['full_name']}\n"
-                f"🎓 Курс: {data['course']}\n"
-                f"🪪 Student ID: {data['student_id']}\n"
-                f"✈️ Telegram: {username_str} (ID: {user.id})\n"
-                f"📞 Контакты: {data['contact_info']}\n"
-                f"📄 CV / Портфолио: {data['cv_portfolio']}\n"
-                f"🌐 Язык анкеты: {user_lang.upper()}\n\n"
-                f"🧠 Мотивация / Почему хочет в команду:\n{data['motivation']}\n\n"
-                f"🔖 Анкета №{app_id}"
+            logger.warning(f"Ошибка Markdown в {chat_id}: {e}")
+
+        # Попытка 2: plain text (fallback)
+        plain_text = (
+            f"🎯 НА КАКУЮ РОЛЬ ПОДАЕТСЯ КАНДИДАТ:\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔥 {data['vacancy_title']}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📋 ДАННЫЕ КАНДИДАТА:\n"
+            f"👤 ФИО: {data['full_name']}\n"
+            f"🎓 Курс: {data['course']}\n"
+            f"🪦 Student ID: {data['student_id']}\n"
+            f"✈️ Telegram: {username_str} (ID: {user.id})\n"
+            f"📞 Контакты: {data['contact_info']}\n"
+            f"📄 CV / Портфолио: {data['cv_portfolio']}\n"
+            f"🌐 Язык анкеты: {user_lang.upper()}\n\n"
+            f"🧠 Мотивация:\n{data['motivation']}\n\n"
+            f"🔖 Анкета №{app_id}"
+        )
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=plain_text,
+                reply_markup=get_group_application_keyboard(app_id, user.id, user.username),
             )
+            logger.info(f"Заявка #{app_id} отправлена в группу {chat_id} (без Markdown)")
+            return True
+        except Exception as e2:
+            logger.error(f"Ошибка plain text в {chat_id}: {e2}", exc_info=True)
+            return False
+
+    async def send_cv_file(chat_id: int) -> None:
+        """Send the CV file/photo to the group. Silently logs errors."""
+        if not has_cv_file:
+            return
+        caption = f"📄 CV кандидата — {escape_md(data['full_name'])} (Анкета №{app_id})"
+        try:
+            if cv_file_type == "photo":
+                await bot.send_photo(chat_id=chat_id, photo=cv_file_id, caption=caption)
+            else:
+                await bot.send_document(chat_id=chat_id, document=cv_file_id, caption=caption)
+            logger.info(f"CV-файл заявки #{app_id} отправлен в {chat_id}")
+        except Exception as e:
+            logger.error(f"Ошибка отправки CV-файла заявки #{app_id} в {chat_id}: {e}", exc_info=True)
+
+    target_id = TARGET_GROUP_ID
+
+    # Первая попытка отправки карточки
+    try:
+        sent = await send_card(target_id)
+    except Exception as e_outer:
+        logger.error(f"Ошибка send_card ({target_id}): {e_outer}", exc_info=True)
+        # Проверяем миграцию чата
+        new_chat_id = await resolve_chat_id(e_outer)
+        if new_chat_id:
+            target_id = new_chat_id
+            logger.info(f"Группа мигрировала, новый ID: {new_chat_id}")
             try:
-                await bot.send_message(
-                    chat_id=target_id,
-                    text=plain_text,
-                    reply_markup=get_group_application_keyboard(app_id, user.id, user.username)
-                )
-                logger.info(f"Заявка #{app_id} отправлена в группу {target_id} (без Markdown)")
-            except Exception as e3:
-                logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: не удалось отправить заявку #{app_id} в группу ({target_id}) даже без Markdown: {e3}", exc_info=True)
+                sent = await send_card(target_id)
+            except Exception as e2:
+                logger.error(f"Ошибка send_card после миграции ({target_id}): {e2}", exc_info=True)
+                sent = False
+        else:
+            sent = False
+
+    if sent:
+        # Отмечаем в БД что заявка дошла до группы
+        try:
+            await mark_application_sent(app_id)
+        except Exception as e_mark:
+            logger.error(f"Ошибка mark_application_sent #{app_id}: {e_mark}")
+        # Отправляем CV-файл вслед за карточкой
+        await send_cv_file(target_id)
     else:
-        logger.warning(f"TARGET_GROUP_ID не задан или равен 0! Заявка #{app_id} НЕ отправлена в группу.")
+        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: не удалось отправить заявку #{app_id} в группу {target_id}.")
+        # Всё равно пробуем отправить CV-файл чтобы хоть что-то дошло
+        await send_cv_file(target_id)
 
 

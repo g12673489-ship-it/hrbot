@@ -30,12 +30,6 @@ async def init_db():
             );
         """)
         
-        # Миграция: добавляем photo_id, если его нет
-        try:
-            await db.execute("ALTER TABLE vacancies ADD COLUMN photo_id TEXT DEFAULT NULL;")
-        except Exception:
-            pass # Колонка уже существует
-            
         # Таблица откликов студентов
         await db.execute("""
             CREATE TABLE IF NOT EXISTS applications (
@@ -52,11 +46,34 @@ async def init_db():
                 motivation TEXT DEFAULT '',
                 lang TEXT DEFAULT 'en',
                 status TEXT DEFAULT 'pending',
+                sent_to_group INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (vacancy_id) REFERENCES vacancies (id) ON DELETE CASCADE
             );
         """)
+
+        # Таблица посещений (для статистики)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_visits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                visited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
         await db.commit()
+
+        # --- Миграции (безопасное добавление колонок) ---
+        migrations = [
+            "ALTER TABLE vacancies ADD COLUMN photo_id TEXT DEFAULT NULL;",
+            "ALTER TABLE applications ADD COLUMN sent_to_group INTEGER DEFAULT 0;",
+        ]
+        for sql in migrations:
+            try:
+                await db.execute(sql)
+                await db.commit()
+            except Exception:
+                pass  # Колонка уже существует
 
 # --- ЯЗЫКИ ПОЛЬЗОВАТЕЛЕЙ ---
 
@@ -78,6 +95,16 @@ async def set_user_lang(user_id: int, lang: str):
             ON CONFLICT(user_id) DO UPDATE SET lang = excluded.lang
             """,
             (user_id, lang)
+        )
+        await db.commit()
+
+# --- ПОСЕЩЕНИЯ ---
+
+async def log_visit(user_id: int):
+    """Записать посещение пользователя (команда /start)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO user_visits (user_id) VALUES (?)", (user_id,)
         )
         await db.commit()
 
@@ -169,8 +196,8 @@ async def create_application(
         cursor = await db.execute(
             """
             INSERT INTO applications 
-            (vacancy_id, vacancy_title, user_id, full_name, course, student_id, username, contact_info, cv_portfolio, motivation, lang)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (vacancy_id, vacancy_title, user_id, full_name, course, student_id, username, contact_info, cv_portfolio, motivation, lang, sent_to_group)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """,
             (
                 vacancy_id, vacancy_title, user_id, full_name, course, student_id,
@@ -180,29 +207,27 @@ async def create_application(
         await db.commit()
         return cursor.lastrowid
 
-async def has_recent_application(user_id: int, vacancy_id: int, hours: int = 24) -> tuple[bool, int]:
-    """
-    Проверяет, подавал ли пользователь заявку на эту же вакансию за последние `hours` часов.
-    Возвращает (has_recent: bool, remaining_seconds: int).
-    """
+async def mark_application_sent(app_id: int):
+    """Отметить заявку как успешно отправленную в группу."""
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE applications SET sent_to_group = 1 WHERE id = ?", (app_id,)
+        )
+        await db.commit()
+
+async def get_unsent_applications() -> list:
+    """Получить все заявки, которые НЕ были отправлены в группу."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
         async with db.execute(
             """
-            SELECT (strftime('%s', 'now') - strftime('%s', created_at)) AS diff_seconds
-            FROM applications 
-            WHERE user_id = ? AND vacancy_id = ? 
-            ORDER BY id DESC LIMIT 1
-            """,
-            (user_id, vacancy_id)
+            SELECT * FROM applications 
+            WHERE sent_to_group = 0 
+            ORDER BY id ASC
+            """
         ) as cursor:
-            row = await cursor.fetchone()
-            if row and row[0] is not None:
-                diff_seconds = int(row[0])
-                cooldown_seconds = hours * 3600
-                if diff_seconds < cooldown_seconds:
-                    remaining_seconds = cooldown_seconds - diff_seconds
-                    return True, remaining_seconds
-            return False, 0
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
 async def get_application_by_id(app_id: int):
     """Получить заявку по ID."""
@@ -221,3 +246,59 @@ async def update_application_status(app_id: int, status: str):
             "UPDATE applications SET status = ? WHERE id = ?", (status, app_id)
         )
         await db.commit()
+
+# --- СТАТИСТИКА ---
+
+async def get_stats() -> dict:
+    """
+    Получить статистику бота:
+    - посещения за сегодня / вчера / неделю
+    - заявки за сегодня / вчера / неделю
+    - всего заявок
+    - не отправленных в группу
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        stats = {}
+
+        # --- Посещения ---
+        visit_queries = {
+            "visits_today": "date(visited_at) = date('now', 'localtime')",
+            "visits_yesterday": "date(visited_at) = date('now', '-1 day', 'localtime')",
+            "visits_week": "visited_at >= datetime('now', '-7 days', 'localtime')",
+        }
+        for key, condition in visit_queries.items():
+            async with db.execute(
+                f"SELECT COUNT(*) FROM user_visits WHERE {condition}"
+            ) as cur:
+                row = await cur.fetchone()
+                stats[key] = row[0] if row else 0
+
+        # --- Уникальные посетители ---
+        async with db.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM user_visits WHERE visited_at >= datetime('now', '-7 days', 'localtime')"
+        ) as cur:
+            row = await cur.fetchone()
+            stats["unique_users_week"] = row[0] if row else 0
+
+        # --- Заявки ---
+        app_queries = {
+            "apps_today": "date(created_at) = date('now', 'localtime')",
+            "apps_yesterday": "date(created_at) = date('now', '-1 day', 'localtime')",
+            "apps_week": "created_at >= datetime('now', '-7 days', 'localtime')",
+            "apps_total": "1=1",
+        }
+        for key, condition in app_queries.items():
+            async with db.execute(
+                f"SELECT COUNT(*) FROM applications WHERE {condition}"
+            ) as cur:
+                row = await cur.fetchone()
+                stats[key] = row[0] if row else 0
+
+        # --- Не отправленные в группу ---
+        async with db.execute(
+            "SELECT COUNT(*) FROM applications WHERE sent_to_group = 0"
+        ) as cur:
+            row = await cur.fetchone()
+            stats["unsent_count"] = row[0] if row else 0
+
+        return stats

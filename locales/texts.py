@@ -34,7 +34,7 @@ TEXTS = {
         "step_student_id": "🪪 **Шаг 3 из 6: Студенческий ID**\n\nВведите ваш Student ID (например: su12379, sen17213):",
         "err_student_id": "⚠️ Неверный формат Student ID! Ожидается формат типа: su12345, ad123821.",
         "step_phone": "📞 **Шаг 4 из 6: Контактный телефон**\n\nУкажите ваш номер телефона для связи:",
-        "step_cv": "📄 **Шаг 5 из 6: CV / Резюме / Портфолио (по возможности)**\n\nПрикрепите ссылку на резюме, портфолио или GitHub/Notion. Если нет — нажмите кнопкой ниже «⏩ Пропустить»:",
+        "step_cv": "📄 **Шаг 5 из 6: CV / Резюме / Портфолио (по возможности)**\n\nВы можете:\n• Прикрепить файл (PDF, Word, TXT)\n• Отправить ссылку (GitHub, Notion, hh.ru и т.д.)\n\nЕсли нет — нажмите кнопкой ниже «⏩ Пропустить»:",
         "step_motivation": (
             "🚀 **Шаг 6 из 6: Мотивация / О себе**\n\n"
             "Подробно расскажите, почему вам интересна эта тема, какой у вас опыт или стремления, "
@@ -51,6 +51,7 @@ TEXTS = {
         "preview_student_id": "🪪 **Student ID:** {student_id}\n",
         "preview_phone": "📞 **Телефон:** {phone}\n",
         "preview_cv": "📄 **CV / Резюме:** {cv}\n",
+        "preview_cv_file": "📄 **CV / Резюме:** 📎 Файл прикреплён\n",
         "preview_motivation": "🧠 **Мотивация / О себе:** {motivation}\n\n",
         "preview_confirm": "Всё верно? Нажмите **«✅ Отправить заявку»**.",
         
@@ -95,7 +96,7 @@ TEXTS = {
         "step_student_id": "🪪 **Step 3 of 6: Student ID**\n\nEnter your Student ID number (e.g. su12379, sen17213):",
         "err_student_id": "⚠️ Invalid Student ID format! Expected format: su12345, ad123821.",
         "step_phone": "📞 **Step 4 of 6: Contact Phone Number**\n\nEnter your phone number for contact:",
-        "step_cv": "📄 **Step 5 of 6: CV / Resume / Portfolio (Optional)**\n\nShare a link to your CV, portfolio, or GitHub. If you don't have one, click '⏩ Skip' below:",
+        "step_cv": "📄 **Step 5 of 6: CV / Resume / Portfolio (Optional)**\n\nYou can:\n• Attach a file (PDF, Word, TXT)\n• Send a link (GitHub, Notion, LinkedIn, etc.)\n\nIf you don't have one, click '⏩ Skip' below:",
         "step_motivation": (
             "🚀 **Step 6 of 6: Motivation / About Yourself**\n\n"
             "Please describe in detail why you are interested in this topic, what background or goals you have, "
@@ -112,6 +113,7 @@ TEXTS = {
         "preview_student_id": "🪪 **Student ID:** {student_id}\n",
         "preview_phone": "📞 **Phone:** {phone}\n",
         "preview_cv": "📄 **CV / Portfolio:** {cv}\n",
+        "preview_cv_file": "📄 **CV / Portfolio:** 📎 File attached\n",
         "preview_motivation": "🧠 **Motivation:** {motivation}\n\n",
         "preview_confirm": "Is everything correct? Press **«✅ Submit Application»**.",
         
@@ -156,7 +158,7 @@ TEXTS = {
         "step_student_id": "🪪 **3-bosqich: Talaba ID**\n\nTalabalik guvohnomasi / Student ID raqamingizni kiriting (masalan: su12379, sen17213):",
         "err_student_id": "⚠️ Noto'g'ri Student ID formati! Kutilayotgan format: su12345, ad123821.",
         "step_phone": "📞 **4-bosqich: Telefon raqami**\n\nAloqa uchun telefon raqamingizni kiriting:",
-        "step_cv": "📄 **5-bosqich: CV / Rezyume / Portfolio (ixtiyoriy)**\n\nCV, portfolio yoki rezyume havolangizni yuboring. Agar yo'q bo'lsa, '⏩ O'tkazib yuborish' tugmasini bosing:",
+        "step_cv": "📄 **5-bosqich: CV / Rezyume / Portfolio (ixtiyoriy)**\n\nSiz quyidagilarni qilishingiz mumkin:\n• Fayl yuborish (PDF, Word, TXT)\n• Havola yuborish (GitHub, Notion va boshqalar)\n\nAgar yo'q bo'lsa, '⏩ O'tkazib yuborish' tugmasini bosing:",
         "step_motivation": (
             "🚀 **6-bosqich: Motivatsiya / O'zingiz haqingizda**\n\n"
             "Ushbu yo'nalish nima uchun sizga qiziqarliligini, tajribangiz yoki maqsadlaringizni "
@@ -173,6 +175,7 @@ TEXTS = {
         "preview_student_id": "🪪 **Student ID:** {student_id}\n",
         "preview_phone": "📞 **Telefon:** {phone}\n",
         "preview_cv": "📄 **CV / Portfolio:** {cv}\n",
+        "preview_cv_file": "📄 **CV / Portfolio:** 📎 Fayl biriktirilgan\n",
         "preview_motivation": "🧠 **Motivatsiya:** {motivation}\n\n",
         "preview_confirm": "Barchasi to'g'rimi? **«✅ Ariza yuborish»** tugmasini bosing.",
         

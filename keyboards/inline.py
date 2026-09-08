@@ -62,6 +62,18 @@ def get_admin_main_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="📊 Статистика",
+                    callback_data="admin_stats"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Переслать незашедшие заявки",
+                    callback_data="admin_resend_unsent"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="❌ Закрыть панель",
                     callback_data="admin_close"
                 )

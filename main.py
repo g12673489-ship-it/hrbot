@@ -1,27 +1,31 @@
 import asyncio
 import logging
 import sys
+import os
 
 from aiogram import Bot, Dispatcher
-from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import BOT_TOKEN, TARGET_GROUP_ID
 from database.db import init_db
 from handlers import admin, user, group
 
 async def main():
+    # --- Настройка логирования (stdout + файл) ---
+    log_handlers = [logging.StreamHandler(sys.stdout)]
+    log_file = os.path.join(os.path.dirname(__file__), "bot.log")
+    try:
+        log_handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+    except Exception:
+        pass  # нет прав на запись — работаем без файла
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-        handlers=[
-            logging.StreamHandler(sys.stdout)
-        ]
+        handlers=log_handlers
     )
 
     if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        logging.error("❌ BOT_TOKEN не указан в файле .env! Пожалуйста, укажите токен вашего бота от @BotFather.")
-        print("\n[ОШИБКА] В файле .env отсутствует валидный BOT_TOKEN.")
-        print("Укажите токен бота в файле .env и запустите снова.\n")
+        logging.error("❌ BOT_TOKEN не указан в файле .env!")
         return
 
     # Инициализация базы данных
@@ -33,7 +37,15 @@ async def main():
 
     # Инициализация бота и диспетчера
     bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher(storage=MemoryStorage())
+
+    # SqliteFSMStorage — FSM-состояния переживают перезапуск бота
+    fsm_db_path = os.path.join(os.path.dirname(__file__), "fsm_states.db")
+    from database.fsm_storage import SqliteFSMStorage
+    storage = SqliteFSMStorage(fsm_db_path)
+    await storage.init()
+    logging.info(f"FSM storage: SqliteFSMStorage ({fsm_db_path})")
+
+    dp = Dispatcher(storage=storage)
 
     # Подключение роутеров
     dp.include_router(admin.router)
@@ -43,7 +55,7 @@ async def main():
     # Пропуск накопившихся обновлений и запуск polling
     await bot.delete_webhook(drop_pending_updates=True)
     logging.info("Бот успешно запущен и готов к работе!")
-    
+
     try:
         await dp.start_polling(bot)
     finally:

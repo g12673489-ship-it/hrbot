@@ -3,6 +3,8 @@ import logging
 import sys
 import os
 
+VERSION = "2.0.1"  # 2026-09-08: fix CV file upload, add stats, remove cooldown
+
 from aiogram import Bot, Dispatcher
 
 from config import BOT_TOKEN, TARGET_GROUP_ID
